@@ -9,13 +9,13 @@ let pipeMap = new WeakMap<pEventEmitter, Map<string | number | symbol, Function>
 function pipe(pObj: object, obj: object, key: string | number | symbol) {
     let pEvent = eventMap.get(pObj)!;
     let event = eventMap.get(obj);
-    let callback = function (event: string, data: EventData): void {
-        pEvent?.trigger(event, {
+    function callback(data: EventData): void {
+        pEvent?.trigger({
             ...data,
             path: [key, ...data.path]
         });
     }
-    event?.on("*", callback);
+    event?.on(callback);
     let map = pipeMap.get(pEvent);
     if (!map) {
         map = new Map();
@@ -29,14 +29,14 @@ function unpipe(pObj: object, obj: object, key: string | number | symbol) {
     let event = eventMap.get(obj);
     let map = pipeMap.get(pEvent);
     let callback = map?.get(key)!;
-    event?.off("*", callback);
+    event?.off(callback);
 }
 
 export interface EventData {
-    event: string;
     path: string[];
     value: any;
     oldValue: any;
+    isDelete: boolean;
 }
 
 function isProxyArrayMethods(obj: any, key: string | number | symbol) {
@@ -56,30 +56,19 @@ function isObservable(obj: any): obj is object | Array<any> {
 }
 
 class EventEmitter {
-    private map = new Map<string, Function[]>();
-    on(event: string, callback: (event: string, ...args: any[]) => void) {
-        let callbacks = this.map.get(event);
-        if (!callbacks) {
-            callbacks = [];
-            this.map.set(event, callbacks);
-        }
-        callbacks.push(callback);
+    private callbacks: Function[] = [];
+    on(callback: (...args: any[]) => void) {
+        this.callbacks.push(callback);
     }
-    off(event: string, callback: Function) {
-        let callbacks = this.map.get(event);
-        let index = callbacks?.indexOf(callback) ?? -1;
+    off(callback: Function) {
+        let index = this.callbacks.indexOf(callback);
         if (index !== -1) {
-            callbacks?.splice(index, 1);
+            this.callbacks.splice(index, 1);
         }
     }
-    trigger(event: string, ...args: any[]) {
-        let callbacks = [
-            ...this.map.get(event) ?? [],
-            ...this.map.get("*") ?? []
-        ];
-
-        for (let cb of callbacks) {
-            cb(event, ...args);
+    trigger(...args: any[]) {
+        for (let cb of this.callbacks) {
+            cb(...args);
         }
     }
 }
@@ -95,11 +84,11 @@ function emitLengthFn(fn: Function) {
         let newLength = value.length;
         if (oldLength !== newLength) {
             let event = eventMap.get(value);
-            event?.trigger("set", {
-                event: "set",
+            event?.trigger({
                 path: ["length"],
                 value: newLength,
-                oldValue: oldLength
+                oldValue: oldLength,
+                isDelete: false
             });
         }
     }
@@ -153,11 +142,11 @@ function proxyFactory<T extends object>(obj: T): T {
                 }
 
                 let event = eventMap.get(obj);
-                event?.trigger("set", {
-                    event: "set",
+                event?.trigger({
                     path: [key],
                     value,
-                    oldValue
+                    oldValue,
+                    isDelete: false
                 });
             }
             return res;
@@ -171,11 +160,11 @@ function proxyFactory<T extends object>(obj: T): T {
                 }
 
                 let event = eventMap.get(obj);
-                event?.trigger("delete", {
-                    event: "delete",
+                event?.trigger({
                     path: [key],
                     value: undefined,
-                    oldValue
+                    oldValue,
+                    isDelete: true
                 });
             }
             return res;
@@ -206,22 +195,22 @@ export function observable<T extends object>(obj: T): T {
     return proxy;
 }
 
-export function watch(obj: object, event: string, callback: (event: string, data: EventData) => void) {
+export function watch(obj: object, callback: (data: EventData) => void) {
     if (!isObservable(obj)) throw new Error();
 
     let target = objectMap.get(obj);
     if (!target) throw new Error();
 
     let e = eventMap.get(target);
-    e?.on(event, callback);
+    e?.on(callback);
 }
 
-export function unwatch(obj: object, event: string, callback: Function) {
+export function unwatch(obj: object, callback: Function) {
     if (!isObservable(obj)) throw new Error();
 
     let target = objectMap.get(obj);
     if (!target) throw new Error();
 
     let e = eventMap.get(target);
-    e?.off(event, callback);
+    e?.off(callback);
 }

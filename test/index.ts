@@ -6,25 +6,25 @@ let obj: any = observable({
     }
 });
 
-function callback(event: string, data: EventData) {
+function callback(data: EventData) {
     console.log(JSON.stringify(data));
 }
 
-watch(obj, "*", callback);
+watch(obj, callback);
 
 obj.test = {};
 obj.test.test = "10";
 obj.test.test = "10";
 obj.test = {};
 
-unwatch(obj, "*", callback);
+unwatch(obj, callback);
 
 obj.test = {};
 obj.test.test = "15";
 obj.test.test = "15";
 obj.test = {};
 
-watch(obj, "*", callback);
+watch(obj, callback);
 obj.arr = [];
 obj.arr.push({ test: 2 });
 obj.arr.push({ test: 1 });
