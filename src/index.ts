@@ -1,8 +1,8 @@
 type proxyObject = object;
-type pEventEmitter = EventEmitter;
+type pEventEmitter = Watcher;
 
 let proxyMap = new WeakMap<object, proxyObject>();
-let eventMap = new WeakMap<object | Array<any>, EventEmitter>();
+let eventMap = new WeakMap<object | Array<any>, Watcher>();
 let objectMap = new WeakMap<proxyObject, object | Array<any>>();
 let pipeMap = new WeakMap<pEventEmitter, Map<string | number | symbol, Function>>();
 
@@ -40,11 +40,11 @@ export interface EventData {
 }
 
 function isProxyArrayMethods(obj: any, key: string | number | symbol) {
-    let prxoyMethods = ["pop", "push", "shift", "unshift"];
+    let proxyMethods = ["pop", "push", "shift", "unshift"];
     let isArray = Array.isArray(obj);
-    let needPrxoy = prxoyMethods.includes(key as string);
+    let needProxy = proxyMethods.includes(key as string);
     let isMethod = typeof obj[key] === "function";
-    return isArray && needPrxoy && isMethod;
+    return isArray && needProxy && isMethod;
 }
 
 function isObject(obj: any): obj is object {
@@ -55,7 +55,23 @@ function isObservable(obj: any): obj is object | Array<any> {
     return isObject(obj) || Array.isArray(obj);
 }
 
-class EventEmitter {
+export class Watcher {
+    private static callbacks: Function[] = [];
+    static on(callback: (cb: Watcher, ...args: any[]) => void) {
+        this.callbacks.push(callback);
+    }
+    static off(callback: Function) {
+        let index = this.callbacks.indexOf(callback);
+        if (index !== -1) {
+            this.callbacks.splice(index, 1);
+        }
+    }
+    private static trigger(cb: Watcher, ...args: any[]) {
+        for (let cb of this.callbacks) {
+            cb(cb, ...args);
+        }
+    }
+
     private callbacks: Function[] = [];
     on(callback: (...args: any[]) => void) {
         this.callbacks.push(callback);
@@ -70,6 +86,7 @@ class EventEmitter {
         for (let cb of this.callbacks) {
             cb(...args);
         }
+        Watcher.trigger(this, ...args);
     }
 }
 
@@ -110,8 +127,8 @@ function proxyFactory<T extends object>(obj: T): T {
                 res = proxyMap.get(res);
             }
 
-            let needPrxoy = isProxyArrayMethods(obj, key);
-            if (needPrxoy) {
+            let needProxy = isProxyArrayMethods(obj, key);
+            if (needProxy) {
                 let fn = obj[key];
                 res = emitLengthFn(fn);
             }
@@ -184,7 +201,7 @@ export function observable<T extends object>(obj: T): T {
     proxyMap.set(obj, proxy);
     objectMap.set(proxy, obj);
 
-    let pEvent = new EventEmitter();
+    let pEvent = new Watcher();
     eventMap.set(obj, pEvent);
     for (let key in obj) {
         let value = obj[key];
@@ -197,22 +214,50 @@ export function observable<T extends object>(obj: T): T {
     return proxy;
 }
 
-export function watch(obj: object, callback: (data: EventData) => void) {
-    if (!isObservable(obj)) throw new Error();
+function getTarget(obj: object) {
+    if (!isObservable(obj)) throw new TypeError("obj need to be object or array.");
 
     let target = objectMap.get(obj);
-    if (!target) throw new Error();
+    if (!target) throw new Error("obj shoule be a observable object, use function observable to wrap it.");
 
+    return target;
+}
+
+export function watch(obj: object, callback: (data: EventData) => void) {
+    let target = getTarget(obj);
     let e = eventMap.get(target);
     e?.on(callback);
 }
 
 export function unwatch(obj: object, callback: Function) {
-    if (!isObservable(obj)) throw new Error();
-
-    let target = objectMap.get(obj);
-    if (!target) throw new Error();
-
+    let target = getTarget(obj);
     let e = eventMap.get(target);
     e?.off(callback);
+}
+
+export function dirtyWatch<T extends Function>(fn: T): { watcher: Watcher, fn: T } {
+    let dependencies: Watcher[] = [];
+
+    let watcher = new Watcher();
+    function callback() {
+        watcher.trigger();
+    }
+
+    return {
+        watcher,
+        fn: function (...args: any[]) {
+            for (let dep of dependencies) {
+                dep.off(callback);
+            }
+            dependencies = [];
+
+            Watcher.on(function (dep) {
+                dependencies.push(dep);
+                dep.on(callback)
+            });
+
+            return fn(...args);
+
+        } as any
+    };
 }
