@@ -2,8 +2,8 @@ type proxyObject = object;
 type pEventEmitter = EventEmitter;
 
 let proxyMap = new WeakMap<object, proxyObject>();
-let eventMap = new WeakMap<object, EventEmitter>();
-let objectMap = new WeakMap<proxyObject, object>();
+let eventMap = new WeakMap<object | Array<any>, EventEmitter>();
+let objectMap = new WeakMap<proxyObject, object | Array<any>>();
 let pipeMap = new WeakMap<pEventEmitter, Map<string | number | symbol, Function>>();
 
 function pipe(pObj: object, obj: object, key: string | number | symbol) {
@@ -32,15 +32,27 @@ function unpipe(pObj: object, obj: object, key: string | number | symbol) {
     event?.off("*", callback);
 }
 
-interface EventData {
+export interface EventData {
     event: string;
     path: string[];
     value: any;
     oldValue: any;
 }
 
+function isProxyArrayMethods(obj: any, key: string | number | symbol) {
+    let prxoyMethods = ["pop", "push", "shift", "unshift"];
+    let isArray = Array.isArray(obj);
+    let needPrxoy = prxoyMethods.includes(key as string);
+    let isMethod = typeof obj[key] === "function";
+    return isArray && needPrxoy && isMethod;
+}
+
 function isObject(obj: any): obj is object {
     return Object.prototype.toString.call(obj) === "[object Object]";
+}
+
+function isObservable(obj: any): obj is object | Array<any> {
+    return isObject(obj) || Array.isArray(obj);
 }
 
 class EventEmitter {
@@ -72,13 +84,29 @@ class EventEmitter {
     }
 }
 
-export function observable<T extends object>(obj: T): T {
-    if (!isObject(obj)) throw new Error();
+function emitLengthFn(fn: Function) {
+    return function (this: any, ...args: any[]) {
+        let value = objectMap.get(this) as Array<any>;
+        let oldValue = [...value];
 
-    let res = proxyMap.get(obj);
-    if (res) return res as T;
+        fn.apply(this, args);
 
-    let proxy = new Proxy(obj, {
+        let oldLength = oldValue.length;
+        let newLength = value.length;
+        if (oldLength !== newLength) {
+            let event = eventMap.get(value);
+            event?.trigger("set", {
+                event: "set",
+                path: ["length"],
+                value: newLength,
+                oldValue: oldLength
+            });
+        }
+    }
+}
+
+function proxyFactory<T extends object>(obj: T): T {
+    return new Proxy(obj, {
         enumerate(obj) {
             let res = Reflect.enumerate(obj);
             return Array.from(res);
@@ -87,28 +115,40 @@ export function observable<T extends object>(obj: T): T {
             let res = Reflect.has(obj, key);
             return res;
         },
-        get(obj, key) {
+        get(obj: any, key) {
             let res = Reflect.get(obj, key);
-            if (isObject(res)) {
+            if (isObservable(res)) {
                 res = proxyMap.get(res);
             }
+
+            let needPrxoy = isProxyArrayMethods(obj, key);
+            if (needPrxoy) {
+                let fn = obj[key];
+                res = emitLengthFn(fn);
+            }
+
             return res;
         },
         set(obj: any, key, value) {
             let oldValue = obj[key];
-            if (isObject(value)) {
+            if (isObservable(value)) {
                 let object = objectMap.get(value);
-                if (object) value = object;
+                if (object) {
+                    value = object;
+                } else {
+                    observable(value);
+                }
             }
 
             let res = Reflect.set(obj, key, value);
+            if (oldValue === value) return res;
+
             if (res) {
-                if (isObject(oldValue)) {
+                if (isObservable(oldValue)) {
                     unpipe(obj, oldValue, key);
                 }
 
-                if (isObject(value)) {
-                    observable(value);
+                if (isObservable(value)) {
                     pipe(obj, value, key);
                 }
 
@@ -126,7 +166,7 @@ export function observable<T extends object>(obj: T): T {
             let oldValue = obj[key];
             let res = Reflect.deleteProperty(obj, key);
             if (res) {
-                if (isObject(oldValue)) {
+                if (isObservable(oldValue)) {
                     unpipe(obj, oldValue, key);
                 }
 
@@ -141,6 +181,15 @@ export function observable<T extends object>(obj: T): T {
             return res;
         }
     });
+}
+
+export function observable<T extends object>(obj: T): T {
+    if (!isObservable(obj)) throw new Error();
+
+    let res = proxyMap.get(obj);
+    if (res) return res as T;
+
+    let proxy = proxyFactory(obj);
     proxyMap.set(obj, proxy);
     objectMap.set(proxy, obj);
 
@@ -148,7 +197,7 @@ export function observable<T extends object>(obj: T): T {
     eventMap.set(obj, pEvent);
     for (let key in obj) {
         let value = obj[key];
-        if (isObject(value)) {
+        if (isObservable(value)) {
             observable(value);
             pipe(obj, value, key);
         }
@@ -158,11 +207,21 @@ export function observable<T extends object>(obj: T): T {
 }
 
 export function watch(obj: object, event: string, callback: (event: string, data: EventData) => void) {
-    if (!isObject(obj)) throw new Error();
+    if (!isObservable(obj)) throw new Error();
 
     let target = objectMap.get(obj);
     if (!target) throw new Error();
 
     let e = eventMap.get(target);
     e?.on(event, callback);
+}
+
+export function unwatch(obj: object, event: string, callback: Function) {
+    if (!isObservable(obj)) throw new Error();
+
+    let target = objectMap.get(obj);
+    if (!target) throw new Error();
+
+    let e = eventMap.get(target);
+    e?.off(event, callback);
 }
