@@ -1,4 +1,4 @@
-import { observable, watch, unwatch, EventData } from "../src/index";
+import { observable, watch, unwatch, EventData, dirtyWatch } from "../src/index";
 
 let obj: any = observable({
     l1: {
@@ -34,3 +34,24 @@ obj.arr.splice(0, 1);
 obj.arr[0].test = "test";
 
 obj.arr.length = 0;
+
+console.log("================================");
+
+let test: any = observable({
+    a: {
+        value: 1
+    }
+});
+
+let { fn, watcher } = dirtyWatch(function () {
+    return test.a.value;
+});
+
+watcher.on("change", function () {
+    console.log("test ========= test");
+})
+
+fn();
+
+test.a.value = 10;
+test.a.value = 15;

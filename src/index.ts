@@ -10,12 +10,13 @@ function pipe(pObj: object, obj: object, key: string | number | symbol) {
     let pEvent = eventMap.get(pObj)!;
     let event = eventMap.get(obj);
     function callback(data: EventData): void {
-        pEvent?.trigger({
+        let event = data.event === "delete" ? "change" : data.event;
+        pEvent?.trigger(event, {
             ...data,
             path: [key, ...data.path]
         });
     }
-    event?.on(callback);
+    event?.on("*", callback);
     let map = pipeMap.get(pEvent);
     if (!map) {
         map = new Map();
@@ -29,14 +30,14 @@ function unpipe(pObj: object, obj: object, key: string | number | symbol) {
     let event = eventMap.get(obj);
     let map = pipeMap.get(pEvent);
     let callback = map?.get(key)!;
-    event?.off(callback);
+    event?.off("*", callback);
 }
 
 export interface EventData {
     path: string[];
     value: any;
     oldValue: any;
-    isDelete: boolean;
+    event: string;
 }
 
 function isProxyArrayMethods(obj: any, key: string | number | symbol) {
@@ -56,37 +57,42 @@ function isObservable(obj: any): obj is object | Array<any> {
 }
 
 export class Watcher {
-    private static callbacks: Function[] = [];
-    static on(callback: (cb: Watcher, ...args: any[]) => void) {
-        this.callbacks.push(callback);
-    }
-    static off(callback: Function) {
-        let index = this.callbacks.indexOf(callback);
-        if (index !== -1) {
-            this.callbacks.splice(index, 1);
-        }
-    }
-    private static trigger(cb: Watcher, ...args: any[]) {
-        for (let cb of this.callbacks) {
-            cb(cb, ...args);
-        }
-    }
+    private events = new Map<string, Function[]>();
 
-    private callbacks: Function[] = [];
-    on(callback: (...args: any[]) => void) {
-        this.callbacks.push(callback);
+    on(event: string, callback: (...args: any[]) => void) {
+        let callbacks = this.events.get(event);
+        if (!callbacks) {
+            callbacks = [];
+            this.events.set(event, callbacks);
+        }
+        callbacks.push(callback);
     }
-    off(callback: Function) {
-        let index = this.callbacks.indexOf(callback);
+    off(event: string, callback: Function) {
+        let callbacks = this.events.get(event);
+        if (!callbacks) return;
+
+        let index = callbacks.indexOf(callback);
         if (index !== -1) {
-            this.callbacks.splice(index, 1);
+            callbacks.splice(index, 1);
         }
     }
-    trigger(...args: any[]) {
-        for (let cb of this.callbacks) {
+    trigger(event: string, ...args: any[]) {
+        let callbacks = [
+            ...this.events.get(event) ?? [],
+            ...this.events.get("*") ?? []
+        ];
+
+        for (let cb of callbacks) {
             cb(...args);
         }
-        Watcher.trigger(this, ...args);
+    }
+}
+
+class InnerWatcher extends Watcher {
+    static readonly innerEvent = new Watcher();
+    trigger(event: string, ...args: any[]) {
+        super.trigger(event, ...args);
+        InnerWatcher.innerEvent.trigger(event, this, ...args);
     }
 }
 
@@ -101,11 +107,11 @@ function emitLengthFn(fn: Function) {
         let newLength = value.length;
         if (oldLength !== newLength) {
             let event = eventMap.get(value);
-            event?.trigger({
+            event?.trigger("change", {
                 path: ["length"],
                 value: newLength,
                 oldValue: oldLength,
-                isDelete: false
+                event: "change"
             });
         }
     }
@@ -114,14 +120,41 @@ function emitLengthFn(fn: Function) {
 function proxyFactory<T extends object>(obj: T): T {
     return new Proxy(obj, {
         enumerate(obj) {
+            let value = obj;
+            let event = eventMap.get(obj);
+            event?.trigger("get", {
+                path: [],
+                value,
+                oldValue: value,
+                event: "get"
+            });
+
             let res = Reflect.enumerate(obj);
             return Array.from(res);
         },
-        has(obj, key) {
+        has(obj: any, key) {
+            let value = obj[key];
+            let event = eventMap.get(obj);
+            event?.trigger("get", {
+                path: [key],
+                value,
+                oldValue: value,
+                event: "get"
+            });
+
             let res = Reflect.has(obj, key);
             return res;
         },
         get(obj: any, key) {
+            let value = obj[key];
+            let event = eventMap.get(obj);
+            event?.trigger("get", {
+                path: [key],
+                value,
+                oldValue: value,
+                event: "get"
+            });
+
             let res = Reflect.get(obj, key);
             if (isObservable(res)) {
                 res = proxyMap.get(res);
@@ -161,11 +194,11 @@ function proxyFactory<T extends object>(obj: T): T {
                 }
 
                 let event = eventMap.get(obj);
-                event?.trigger({
+                event?.trigger("change", {
                     path: [key],
                     value,
                     oldValue,
-                    isDelete: false
+                    event: "change"
                 });
             }
             return res;
@@ -179,11 +212,11 @@ function proxyFactory<T extends object>(obj: T): T {
                 }
 
                 let event = eventMap.get(obj);
-                event?.trigger({
+                event?.trigger("change", {
                     path: [key],
                     value: undefined,
                     oldValue,
-                    isDelete: true
+                    event: "delete"
                 });
             }
             return res;
@@ -201,7 +234,7 @@ export function observable<T extends object>(obj: T): T {
     proxyMap.set(obj, proxy);
     objectMap.set(proxy, obj);
 
-    let pEvent = new Watcher();
+    let pEvent = new InnerWatcher();
     eventMap.set(obj, pEvent);
     for (let key in obj) {
         let value = obj[key];
@@ -226,38 +259,54 @@ function getTarget(obj: object) {
 export function watch(obj: object, callback: (data: EventData) => void) {
     let target = getTarget(obj);
     let e = eventMap.get(target);
-    e?.on(callback);
+    e?.on("change", callback);
 }
 
 export function unwatch(obj: object, callback: Function) {
     let target = getTarget(obj);
     let e = eventMap.get(target);
-    e?.off(callback);
+    e?.off("change", callback);
 }
 
 export function dirtyWatch<T extends Function>(fn: T): { watcher: Watcher, fn: T } {
     let dependencies: Watcher[] = [];
+    let isDirty = true;
+    let cache: any;
+    let timer: number;
 
     let watcher = new Watcher();
     function callback() {
-        watcher.trigger();
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            isDirty = true;
+            watcher.trigger("change");
+        });
+    }
+
+    function depCollect(dep: Watcher) {
+        dependencies.push(dep);
     }
 
     return {
         watcher,
         fn: function (...args: any[]) {
+            if (!isDirty) return cache;
+
             for (let dep of dependencies) {
-                dep.off(callback);
+                dep.off("change", callback);
             }
             dependencies = [];
 
-            Watcher.on(function (dep) {
-                dependencies.push(dep);
-                dep.on(callback)
-            });
+            InnerWatcher.innerEvent.on("get", depCollect);
+            cache = fn(...args);
+            isDirty = false;
+            InnerWatcher.innerEvent.off("get", depCollect);
 
-            return fn(...args);
+            for (let dep of dependencies) {
+                dep.on("change", callback);
+            }
 
+            return cache;
         } as any
     };
 }
