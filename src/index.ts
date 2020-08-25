@@ -268,7 +268,7 @@ export function unwatch(obj: object, callback: Function) {
     e?.off("change", callback);
 }
 
-export function dirtyWatch<T extends Function>(fn: T): { watcher: Watcher, fn: T } {
+export function dirtyWatch<T extends Function>(useCache: boolean, fn: T): [T, Watcher] {
     let dependencies: Watcher[] = [];
     let isDirty = true;
     let cache: any;
@@ -287,10 +287,9 @@ export function dirtyWatch<T extends Function>(fn: T): { watcher: Watcher, fn: T
         dependencies.push(dep);
     }
 
-    return {
-        watcher,
-        fn: function (...args: any[]) {
-            if (!isDirty) return cache;
+    return [
+        function (...args: any[]) {
+            if (useCache && !isDirty) return cache;
 
             for (let dep of dependencies) {
                 dep.off("change", callback);
@@ -307,6 +306,7 @@ export function dirtyWatch<T extends Function>(fn: T): { watcher: Watcher, fn: T
             }
 
             return cache;
-        } as any
-    };
+        } as any,
+        watcher
+    ];
 }

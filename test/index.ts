@@ -43,7 +43,7 @@ let test: any = observable({
     }
 });
 
-let { fn, watcher } = dirtyWatch(function () {
+let [fn, watcher] = dirtyWatch(function () {
     return test.a.value;
 });
 
